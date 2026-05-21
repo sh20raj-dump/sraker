@@ -1,4 +1,4 @@
-import { Task } from "./storageService";
+import { Task, Workspace } from "./storageService";
 
 export type RecurringInterval = 'daily' | 'weekly' | 'monthly' | 'yearly' | number; // number for custom days
 
@@ -8,12 +8,13 @@ export interface RecurringTaskConfig {
 }
 
 // Create a new task
-export const createTask = (text: string, recurringConfig?: RecurringTaskConfig): Task => {
+export const createTask = (text: string, workspace: Workspace = 'default', recurringConfig?: RecurringTaskConfig): Task => {
     return {
         id: Date.now(),
         text,
         completed: false,
         createdAt: new Date().toISOString(),
+        workspace,
         recurring: recurringConfig,
     };
 };

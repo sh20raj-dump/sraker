@@ -1,54 +1,76 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Task, getActiveTasks, saveTasks } from "./services/storageService";
+import { 
+  Task, 
+  Workspace,
+  getActiveTasks, 
+  getArchivedTasks,
+  saveTasks,
+  getCurrentWorkspace,
+  migrateTasksToWorkspace
+} from "./services/storageService";
+import { createTask } from "./services/taskService";
 import TaskItem from "./components/TaskItem";
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import WorkspaceSelector from "./components/WorkspaceSelector";
 import ArchivedTaskItem from "./components/ArchivedTaskItem";
 import { useTheme } from "next-themes";
 import { groupTasksByDate, formatDate } from "./utils/taskUtils";
-import { Input } from "@/components/ui/input";
 import { speechService } from "./services/speechService";
-// Import Lucide React icons
 import { 
   Archive, 
-  SortAsc, 
   Sun, 
   Moon, 
   Mic, 
-  Send, 
-  Trash2,
-  Calendar
+  Plus,
+  Download,
+  Check,
+  Send
 } from 'lucide-react';
 
 export default function Home() {
+  const [currentWorkspace, setCurrentWorkspace] = useState<Workspace>('default');
   const [tasks, setTasks] = useState<Task[]>([]);
   const [archivedTasks, setArchivedTasks] = useState<Task[]>([]);
   const [isArchiveOpen, setIsArchiveOpen] = useState(false);
   const [newTask, setNewTask] = useState<string>("");
+  const [isListening, setIsListening] = useState(false);
+  const [showInstallPrompt, setShowInstallPrompt] = useState(false);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const { theme, setTheme } = useTheme();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Load tasks from localStorage on component mount
+  // Initialize workspace and migrate existing tasks
   useEffect(() => {
-    const activeTasks = getActiveTasks();
-    const allTasks = JSON.parse(localStorage.getItem('tasks') || '[]');
-    const archived = allTasks.filter((task: Task) => task.archived);
+    migrateTasksToWorkspace();
+    const workspace = getCurrentWorkspace();
+    setCurrentWorkspace(workspace);
+  }, []);
+
+  // Load tasks from localStorage when workspace changes
+  useEffect(() => {
+    const activeTasks = getActiveTasks(currentWorkspace);
+    const archived = getArchivedTasks(currentWorkspace);
     setTasks(activeTasks);
     setArchivedTasks(archived);
-    
-    // Set dark mode as default
-    setTheme("dark");
-  }, [setTheme]);
+  }, [currentWorkspace]);
 
- // Save tasks to localStorage whenever active tasks change
+  // PWA install prompt
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setShowInstallPrompt(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  // Save tasks to localStorage whenever active tasks change
   useEffect(() => {
     saveTasks([...tasks, ...archivedTasks]);
   }, [tasks, archivedTasks]);
@@ -64,15 +86,14 @@ export default function Home() {
 
   const handleAddTask = () => {
     if (newTask.trim() !== "") {
-      const task: Task = {
-        id: Date.now(),
-        text: newTask,
-        completed: false,
-        createdAt: new Date().toISOString(),
-      };
+      const task = createTask(newTask.trim(), currentWorkspace);
       setTasks([...tasks, task]);
       setNewTask("");
     }
+  };
+
+  const handleWorkspaceChange = (workspace: Workspace) => {
+    setCurrentWorkspace(workspace);
   };
 
   const toggleTask = (id: number) => {
@@ -105,11 +126,15 @@ export default function Home() {
   };
 
   const handleSpeech = () => {
-    if (speechService.getIsListening()) {
-      // Stop listening
+    if (!speechService.isSupported()) {
+      alert("Speech recognition is not supported in this browser.");
+      return;
+    }
+
+    if (isListening) {
       speechService.stopRecognition();
+      setIsListening(false);
     } else {
-      // Start listening
       speechService.startRecognition(
         (text) => {
           setNewTask(text);
@@ -117,8 +142,21 @@ export default function Home() {
         (error) => {
           console.error(error);
           alert(error);
+          setIsListening(false);
         }
       );
+      setIsListening(true);
+    }
+  };
+
+  const handleInstallPWA = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') {
+        setShowInstallPrompt(false);
+      }
+      setDeferredPrompt(null);
     }
   };
 
@@ -126,10 +164,153 @@ export default function Home() {
     if (e.key === "Enter") {
       handleAddTask();
     }
- };
+  };
 
   // Group tasks by date
   const groupedTasks = groupTasksByDate(tasks);
+  const completedCount = tasks.filter(task => task.completed).length;
+
+  return (
+    <div className="flex flex-col min-h-screen bg-background">
+      {/* Top Bar */}
+      <div className="flex justify-between items-center p-4 border-b border-border bg-card">
+        <div>
+          <h1 className="text-lg font-semibold text-foreground">Tasks</h1>
+          <p className="text-sm text-muted-foreground">
+            {tasks.length} total • {completedCount} completed
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {showInstallPrompt && (
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={handleInstallPWA}
+              className="h-8 w-8 p-0"
+            >
+              <Download className="h-4 w-4" />
+            </Button>
+          )}
+          
+          <Dialog open={isArchiveOpen} onOpenChange={setIsArchiveOpen}>
+            <DialogTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                <Archive className="h-4 w-4" />
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-h-[80vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle className="text-base font-semibold flex items-center gap-2">
+                  <Archive className="h-4 w-4" />
+                  Archived Tasks ({archivedTasks.length})
+                </DialogTitle>
+              </DialogHeader>
+              {archivedTasks.length === 0 ? (
+                <p className="text-muted-foreground text-center py-8 text-sm">
+                  No archived tasks yet.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {archivedTasks.map((task) => (
+                    <ArchivedTaskItem 
+                      key={task.id} 
+                      task={task} 
+                      onDelete={deleteArchivedTask} 
+                    />
+                  ))}
+                </div>
+              )}
+            </DialogContent>
+          </Dialog>
+          
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            onClick={toggleTheme}
+            className="h-8 w-8 p-0"
+          >
+            {theme === "dark" ? (
+              <Sun className="h-4 w-4" />
+            ) : (
+              <Moon className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
+      </div>
+
+      {/* Task List */}
+      <div className="flex-1 overflow-y-auto p-4 pb-20">
+        {tasks.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center py-16">
+            <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4">
+              <Check className="h-8 w-8 text-muted-foreground" />
+            </div>
+            <h3 className="text-lg font-medium text-foreground mb-2">No tasks yet</h3>
+            <p className="text-muted-foreground text-sm mb-6 max-w-sm">
+              Add your first task below. You can type or use voice input.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-6 max-w-2xl mx-auto">
+            {groupedTasks.map(({ date, tasks: dateTasks }) => (
+              <div key={date} className="space-y-2">
+                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider sticky top-0 bg-background py-1">
+                  {formatDate(date)}
+                </h3>
+                <div className="space-y-2">
+                  {dateTasks.map((task) => (
+                    <TaskItem 
+                      key={task.id} 
+                      task={task} 
+                      onToggle={toggleTask} 
+                      onArchive={archiveTask} 
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Fixed Input Area */}
+      <div className="fixed bottom-0 left-0 right-0 p-4 bg-background border-t border-border">
+        <div className="max-w-2xl mx-auto">
+          <div className="flex gap-2">
+            <div className="flex-1 relative">
+              <Input
+                type="text"
+                value={newTask}
+                onChange={(e) => setNewTask(e.target.value)}
+                onKeyPress={handleKeyPress}
+                placeholder="Add a new task..."
+                className="pr-10 h-10 bg-input border-border focus:ring-2 focus:ring-ring focus:border-transparent"
+              />
+              <Button
+                onClick={handleSpeech}
+                variant="ghost"
+                size="sm"
+                className={`absolute right-1 top-1 h-8 w-8 p-0 ${
+                  isListening ? "text-red-500 animate-pulse" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Mic className="h-4 w-4" />
+              </Button>
+            </div>
+            <Button
+              onClick={handleAddTask}
+              disabled={!newTask.trim()}
+              className="h-10 w-10 p-0 bg-primary hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
  return (
     <div className="flex flex-col min-h-screen bg-background">
